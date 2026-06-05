@@ -26,7 +26,7 @@ export async function getGanamosSessionToken() {
   const now = new Date();
 
   // 1. Buscamos el token en la base de datos
-  let sessionConfig = await Config.findOne({ key: 'ganamos_session' });
+  let sessionConfig = await Config.findOne({ key: 'ganamos_lotus' });
 
   // 2. Si existe y vence en más de 1 hora, lo usamos
   if (sessionConfig && sessionConfig.expiresAt > new Date(now.getTime() + 60 * 60 * 1000)) {
@@ -67,7 +67,7 @@ export async function getGanamosSessionToken() {
 
     // 4. Guardamos en MongoDB
     await Config.findOneAndUpdate(
-      { key: 'ganamos_session' },
+      { key: 'ganamos_lotus' },
       { 
         value: tokenExtraido,
         expiresAt: expiresAt 
@@ -105,7 +105,7 @@ export async function fetchGanamosAPI(endpoint: string, options: RequestInit = {
   
   // Si nos da 401, el token expiró prematuramente. Lo borramos para que se regenere la próxima.
   if (response.status === 401) {
-    await Config.deleteOne({ key: 'ganamos_session' });
+    await Config.deleteOne({ key: 'ganamos_lotus' });
     throw new Error("Token expirado (401). Se forzará relogin en el próximo intento.");
   }
 
