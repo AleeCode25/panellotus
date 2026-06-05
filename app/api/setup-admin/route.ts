@@ -9,7 +9,7 @@ export async function GET() {
     await dbConnect();
     
     // Verificamos si ya existe el admin buscando por "usuario" (el campo correcto)
-    const adminExists = await UserLotus.findOne({ usuario: "adminsito" });
+    const adminExists = await UserLotus.findOne({ usuario: "lotus" });
     if (adminExists) {
       return NextResponse.json({ msg: "El Admin ya existe en la nueva base de datos." });
     }
