@@ -18,7 +18,7 @@ export async function GET() {
     
     // Creamos el admin en la colección 'users_ganamos'
     await UserLotus.create({
-      usuario: "adminsito", // Usamos solo 'usuario' como dice tu esquema
+      usuario: "lotus", // Usamos solo 'usuario' como dice tu esquema
       password: hashedPassword,
       nombre: "El Admin",
       canPay: true,
