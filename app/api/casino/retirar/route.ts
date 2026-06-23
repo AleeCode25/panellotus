@@ -3,7 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import dbConnect from "@/lib/mongodb";
 import Transferencia from "@/models/Transferencia";
-import { fetchGanamosAPI, getUsuarioSaldo } from "@/lib/ganamosApi";
+// 👇 Importamos los nuevos helpers limpios
+import { getUsuarioSaldo, retirarSaldoGanamos } from "@/lib/ganamosApi";
 
 export async function POST(req: Request) {
   try {
@@ -14,30 +15,22 @@ export async function POST(req: Request) {
     const body = await req.json();
     const { username, amount } = body;
 
-    if (!username || !amount || amount <= 0) {
+    if (!username || !amount || Number(amount) <= 0) {
       return NextResponse.json({ error: "Faltan datos o el monto es inválido" }, { status: 400 });
     }
 
     const safeUsername = username.trim().toLowerCase();
 
-    // 1. Buscamos el ID del usuario en Ganamos
+    // 1. Buscamos el ID numérico del usuario en Ganamos
     const saldoData = await getUsuarioSaldo(safeUsername);
     const userId = saldoData.id;
 
-    // 2. Realizamos la operación de retiro (operation: 1 = OUTCOME)
-    const paymentBody = {
-      operation: 1, 
-      amount: Number(amount)
-    };
-
-    const ganamosResponse = await fetchGanamosAPI(`/api/agent_admin/user/${userId}/payment/`, {
-      method: 'POST',
-      body: JSON.stringify(paymentBody)
-    });
-
-    if (ganamosResponse.status !== 0) {
+    // 2. Ejecutamos el retiro en la nueva API
+    try {
+      await retirarSaldoGanamos(userId, Number(amount));
+    } catch (ganamosError: any) {
       return NextResponse.json({ 
-        error: `Ganamos rechazó el retiro: ${ganamosResponse.error_message || 'Error desconocido'}` 
+        error: `Ganamos rechazó el retiro: ${ganamosError.message}` 
       }, { status: 400 });
     }
 

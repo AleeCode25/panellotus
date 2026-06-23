@@ -1,138 +1,174 @@
-import dbConnect from "@/lib/mongodb";
-import Config from "@/models/Config";
+// lib/ganamosApi.ts
 
-// Tus credenciales maestras de Ganamos (idealmente ponelas en tu .env)
-const GANAMOS_USER = process.env.GANAMOS_USER || "Anubis031";
-const GANAMOS_PASS = process.env.GANAMOS_PASS || "Fortuna1511_";
+const NUEVA_API_URL = "https://caja-api.ganamosnet.win";
 
-// Los headers estrictos que sacamos del bash para que no nos tire error de request_from
-const GANAMOS_HEADERS = {
-  'accept': 'application/json, text/plain, */*',
-  'accept-language': 'es-ES,es;q=0.9',
-  'content-type': 'application/json;charset=UTF-8',
-  'origin': 'https://agents.ganamosnet.org',
-  'referer': 'https://agents.ganamosnet.org/',
-  'sec-ch-ua': '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
-  'sec-ch-ua-mobile': '?1',
-  'sec-ch-ua-platform': '"iOS"',
-  'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'
-};
+// ⚠️ ACORDATE DE CAMBIAR LA CONTRASEÑA POR LA REAL DE LA CAPTURA
+const BASIC_AUTH_USER = "yjyt7jmQDxE2kWc9"; 
+const BASIC_AUTH_PASS = process.env.NUEVA_API_PASS || "yjyt7jmQDxE2kWc9"; 
 
 /**
- * Función maestra para obtener el token válido
+ * Helper para generar los headers de Basic Auth
  */
-export async function getGanamosSessionToken() {
-  await dbConnect();
-  const now = new Date();
+function getAuthHeaders() {
+  const credentials = Buffer.from(`${BASIC_AUTH_USER}:${BASIC_AUTH_PASS}`).toString('base64');
+  return {
+    'Authorization': `Basic ${credentials}`,
+    'Content-Type': 'application/json'
+  };
+}
 
-  // 1. Buscamos el token en la base de datos
-  let sessionConfig = await Config.findOne({ key: 'ganamos_lotus' });
-
-  // 2. Si existe y vence en más de 1 hora, lo usamos
-  if (sessionConfig && sessionConfig.expiresAt > new Date(now.getTime() + 60 * 60 * 1000)) {
-    console.log("✅ Usando token de Ganamos desde MongoDB");
-    return sessionConfig.value;
-  }
-
-  // 3. Si no existe o está por expirar, hacemos Login en Ganamos
-  console.log("🔄 Generando nuevo token en Ganamos...");
-  
+/**
+ * Obtener Saldo usando la nueva API
+ */
+export async function getUsuarioSaldo(username: string) {
   try {
-    const response = await fetch('https://agents.ganamosnet.org/api/user/login', {
-      method: 'POST',
-      headers: GANAMOS_HEADERS,
-      body: JSON.stringify({ username: GANAMOS_USER, password: GANAMOS_PASS }),
+    console.log(`🔍 Resolviendo ID para el usuario: ${username}...`);
+    
+    // 1. Obtener el ID del usuario
+    const resolveUrl = `${NUEVA_API_URL}/users/resolve?username=${username}`;
+    const resolveRes = await fetch(resolveUrl, {
+      method: 'GET',
+      headers: getAuthHeaders(),
       cache: 'no-store'
     });
 
-    const data = await response.json();
-
-    if (data.status !== 0) {
-      throw new Error(`Error en login de Ganamos: ${data.error_message || 'Desconocido'}`);
+    if (!resolveRes.ok) {
+      throw new Error(`Fallo al resolver usuario. Status: ${resolveRes.status}`);
     }
 
-    // Extraemos las cookies de los headers de respuesta
-    const setCookieHeader = response.headers.get('set-cookie');
-    if (!setCookieHeader) throw new Error("No se recibió la cookie de sesión de Ganamos");
+    const resolveData = await resolveRes.json();
+    const userId = resolveData.userId;
 
-    // Buscamos la cookie que empieza con 'session=' y la cortamos hasta el punto y coma
-    const sessionMatch = setCookieHeader.match(/session=([^;]+)/);
-    if (!sessionMatch) throw new Error("No se encontró el token de sesión en las cookies");
-
-    const tokenExtraido = `session=${sessionMatch[1]}`;
-
-    // Calculamos vencimiento a 4 horas
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 4);
-
-    // 4. Guardamos en MongoDB
-    await Config.findOneAndUpdate(
-      { key: 'ganamos_lotus' },
-      { 
-        value: tokenExtraido,
-        expiresAt: expiresAt 
-      },
-      { upsert: true, new: true }
-    );
-
-    console.log("💾 Nuevo token de Ganamos guardado por 4 horas");
-    return tokenExtraido;
-
-  } catch (error) {
-    console.error("🔥 Error crítico al conectar con Ganamos:", error);
-    throw error;
-  }
-}
-
-/**
- * Función para hacer peticiones a la API de Ganamos ya autenticado
- */
-export async function fetchGanamosAPI(endpoint: string, options: RequestInit = {}) {
-  const token = await getGanamosSessionToken();
-
-  const finalOptions: RequestInit = {
-    ...options,
-    headers: {
-      ...GANAMOS_HEADERS,
-      ...options.headers,
-      'Cookie': token // Inyectamos la sesión acá
+    if (!userId) {
+      throw new Error("El usuario no existe o la API no devolvió un ID.");
     }
-  };
 
-  const url = `https://agents.ganamosnet.org${endpoint}`;
-  
-  const response = await fetch(url, finalOptions);
-  
-  // Si nos da 401, el token expiró prematuramente. Lo borramos para que se regenere la próxima.
-  if (response.status === 401) {
-    await Config.deleteOne({ key: 'ganamos_lotus' });
-    throw new Error("Token expirado (401). Se forzará relogin en el próximo intento.");
+    console.log(`✅ Usuario encontrado. ID: ${userId}. Consultando saldo...`);
+
+    // 2. Obtener el balance usando el ID
+    const balanceUrl = `${NUEVA_API_URL}/users/${userId}/balance`;
+    const balanceRes = await fetch(balanceUrl, {
+      method: 'GET',
+      headers: getAuthHeaders(),
+      cache: 'no-store'
+    });
+
+    if (!balanceRes.ok) {
+      throw new Error(`Fallo al obtener balance. Status: ${balanceRes.status}`);
+    }
+
+    const balanceData = await balanceRes.json();
+
+    if (!balanceData.success) {
+      throw new Error(balanceData.error || "La API devolvió success: false");
+    }
+
+    console.log(`💰 Saldo obtenido: $${balanceData.balanceTotal}`);
+
+    // 3. Devolvemos el formato exacto que espera tu frontend/backend actual
+    return {
+      id: userId,
+      username: resolveData.username,
+      balance: balanceData.balanceTotal,
+      // La nueva API no parece devolver saldo de bono separado, así que mandamos 0 para que no rompa nada
+      bonus_balance: 0 
+    };
+
+  } catch (error: any) {
+    console.error("❌ Error en la nueva API de Ganamos:", error.message);
+    throw new Error(`Error de API: ${error.message}`);
   }
-
-  return response.json();
 }
 
-export async function getUsuarioSaldo(username: string) {
-  // 1. Buscamos el usuario para obtener su ID
-  const searchResult = await fetchGanamosAPI(`/api/agent_admin/user/search/?username=${username}&is_direct_structure=false`);
+export async function cargarSaldoGanamos(userId: number, amount: number, bonus_amount: number = 0, percent_amount: number = 0) {
+  const url = `${NUEVA_API_URL}/users/${userId}/balance`;
   
-  if (searchResult.status !== 0 || !searchResult.result.data || searchResult.result.data.length === 0) {
-    throw new Error("Usuario no encontrado en Ganamos");
-  }
-
-  const userId = searchResult.result.data[0].id;
-
-  // 2. Con el ID, buscamos el perfil completo (que incluye el balance)
-  const userProfile = await fetchGanamosAPI(`/api/agent_admin/user/${userId}/`);
-
-  if (userProfile.status !== 0) {
-    throw new Error("No se pudo obtener el saldo del usuario");
-  }
-
-  return {
-    id: userId,
-    balance: userProfile.result.user.balance,
-    bonus_balance: userProfile.result.user.bonus_balance,
-    username: userProfile.result.user.username
+  const bodyParams = {
+    amount: amount,
+    bonus_amount: bonus_amount,
+    percent_amount: percent_amount
   };
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(bodyParams),
+    cache: 'no-store'
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Error en la API de carga (Status ${res.status}): ${errorText}`);
+  }
+
+  const data = await res.json();
+  
+  if (!data.success) {
+    throw new Error(data.error || "La API devolvió success: false al intentar cargar.");
+  }
+
+  return data;
 }
+
+export async function retirarSaldoGanamos(userId: number, amount: number) {
+  const url = `${NUEVA_API_URL}/users/${userId}/balance/withdraw`;
+  
+  const bodyParams = {
+    amount: amount,
+  };
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(bodyParams),
+    cache: 'no-store'
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Error en la API de retiro (Status ${res.status}): ${errorText}`);
+  }
+
+  const data = await res.json();
+  
+  if (!data.success) {
+    throw new Error(data.error || "La API devolvió success: false al intentar retirar.");
+  }
+
+  return data;
+}
+
+export async function crearUsuarioGanamos(username: string, password: string) {
+  const url = `${NUEVA_API_URL}/users`;
+  
+  const bodyParams = {
+    username: username,
+    password: password
+  };
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(bodyParams),
+    cache: 'no-store'
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Error en la API de creación (Status ${res.status}): ${errorText}`);
+  }
+
+  const data = await res.json();
+  
+  // Verificamos si la API devolvió success true
+  if (!data.success) {
+    throw new Error(data.error || "La API devolvió success: false al intentar crear el usuario.");
+  }
+
+  return data;
+}
+
+
+// Dejo estas exportadas vacías por si las estás importando en otro lado (para que no te tire error de import)
+export async function fetchGanamosAPI() { throw new Error("Usando nueva API"); }
+export async function getGanamosSessionToken() { return "NUEVA_API_NO_USA_TOKEN"; }

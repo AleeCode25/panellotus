@@ -4,7 +4,8 @@ import Transferencia from "@/models/Transferencia";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import Config from "@/models/Config";
-import { fetchGanamosAPI, getUsuarioSaldo } from "@/lib/ganamosApi";
+// 👇 Importamos las dos funciones limpias de la nueva API
+import { getUsuarioSaldo, cargarSaldoGanamos } from "@/lib/ganamosApi";
 
 export async function POST(req: Request, { params }: any) {
   try {
@@ -22,7 +23,7 @@ export async function POST(req: Request, { params }: any) {
     let esAutocarga = false;
 
     if (apiSecret && apiSecret === CLAVE_SECRETA_BACKEND) {
-        cajeroId = "6a22e45cf0585afe835371d3"; 
+        cajeroId = "6a162fede376e16ae1355714"; 
         esAutocarga = true;
     } else if (session && session.user) {
         cajeroId = (session.user as any).id;
@@ -30,11 +31,25 @@ export async function POST(req: Request, { params }: any) {
         return NextResponse.json({ error: "No autorizado." }, { status: 401 });
     }
 
+    // 1. BUSQUEDA DE TRANSFERENCIA
     const transferencia = await Transferencia.findById(id);
     if (!transferencia) return NextResponse.json({ error: "No se encontró la transferencia." }, { status: 404 });
 
+    // 2. PREVENCIÓN DE DOBLE CARGA: Si ya está CARGADA, no hacer nada
+    if (transferencia.estado === "CARGADA") {
+        return NextResponse.json({ error: "Esta carga ya fue procesada anteriormente." }, { status: 400 });
+    }
+
+    // 3. BLOQUEO TEMPORAL: Marcamos como EN_PROCESO para evitar peticiones simultáneas
+    transferencia.estado = "EN_PROCESO";
+    await transferencia.save();
+
     const usuarioFinal = usuarioDelModal || transferencia.usuarioCasino;
-    if (!usuarioFinal) return NextResponse.json({ error: "Debes ingresar un Usuario de Casino." }, { status: 400 });
+    if (!usuarioFinal) {
+        transferencia.estado = "PENDIENTE";
+        await transferencia.save();
+        return NextResponse.json({ error: "Debes ingresar un Usuario de Casino." }, { status: 400 });
+    }
 
     const safeUsername = usuarioFinal.trim().toLowerCase();
     const montoBase = Number(transferencia.monto);
@@ -57,46 +72,44 @@ export async function POST(req: Request, { params }: any) {
         if (porcentajeAAplicar > 0) {
             conBono = true;
             valorBono = montoBase * (porcentajeAAplicar / 100);
-            tipoBono = 'monto';
+            tipoBono = 'monto'; // Conservamos tu lógica: el porcentaje se convierte en un monto fijo
         } else {
             conBono = false;
         }
     }
 
-    // --- INTEGRACIÓN GANAMOS ---
+    // --- INTEGRACIÓN CON LA NUEVA API GANAMOS ---
+    // A. Buscamos el ID numérico del usuario
     const saldoData = await getUsuarioSaldo(safeUsername);
     const userId = saldoData.id;
 
-    // PREPARACIÓN DE PAGO ESTRICTA
-    // Convertimos todo a Number y usamos parseFloat para asegurar formato decimal
-    let paymentBody: any = { 
-        operation: 0, 
-        amount: parseFloat(montoBase.toString()) 
-    };
+    // B. Preparamos los parámetros de la carga
+    let amount = parseFloat(montoBase.toString());
+    let bonus_amount = 0;
+    let percent_amount = 0;
 
     if (conBono && valorBono) {
-        paymentBody.is_bonus = true;
         const valorNum = parseFloat(valorBono.toString());
-        
         if (tipoBono === 'porcentaje') {
-            paymentBody.percent_amount = valorNum;
+            percent_amount = valorNum;
         } else {
-            paymentBody.bonus_amount = valorNum;
+            bonus_amount = valorNum;
         }
     }
 
-    const ganamosRes = await fetchGanamosAPI(`/api/agent_admin/user/${userId}/payment/`, {
-        method: 'POST',
-        body: JSON.stringify(paymentBody)
-    });
-
-    if (ganamosRes.status !== 0) {
+    // C. Ejecutamos la carga
+    try {
+        await cargarSaldoGanamos(userId, amount, bonus_amount, percent_amount);
+    } catch (ganamosError: any) {
+        // Si falla Ganamos, liberamos el estado a PENDIENTE para que el admin pueda reintentar
+        transferencia.estado = "PENDIENTE";
+        await transferencia.save();
         return NextResponse.json({ 
-            error: `Ganamos rechazó: ${ganamosRes.error_message || 'Error desconocido'}` 
+            error: `Ganamos rechazó la carga: ${ganamosError.message}` 
         }, { status: 400 });
     }
 
-    // --- ACTUALIZACIÓN EN DB ---
+    // --- ACTUALIZACIÓN FINAL EN DB ---
     transferencia.estado = "CARGADA";
     transferencia.usuarioCasino = safeUsername;
     transferencia.fechaCarga = new Date();
@@ -106,7 +119,8 @@ export async function POST(req: Request, { params }: any) {
     
     await transferencia.save();
 
-    return NextResponse.json({ success: true, acreditado: paymentBody.amount });
+    return NextResponse.json({ success: true, acreditado: amount });
+    
   } catch (error: any) {
     console.error("Error en Carga Ganamos:", error);
     return NextResponse.json({ error: "Error de servidor: " + error.message }, { status: 500 });
